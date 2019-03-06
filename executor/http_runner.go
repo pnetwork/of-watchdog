@@ -70,18 +70,7 @@ func (f *HTTPFunctionRunner) Start() error {
 	}()
 
 	go func() {
-		log.Println("Started logging stdout from function.")
-		for {
-			errBuff := make([]byte, 256)
-
-			_, err := f.StdoutPipe.Read(errBuff)
-			if err != nil {
-				log.Fatalf("Error reading stdout: %s", err)
-
-			} else {
-				log.Printf("stdout: %s", errBuff)
-			}
-		}
+		fmt.Print(f.StdoutPipe)
 	}()
 
 	f.Client = makeProxyClient(f.ExecTimeout)
