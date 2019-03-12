@@ -70,16 +70,17 @@ func (f *HTTPFunctionRunner) Start() error {
 	}()
 
 	go func() {
-		log.Println("Started logging stdout from function.")
 		for {
-			errBuff := make([]byte, 256)
-
+			errBuff := make([]byte, 4096)
 			_, err := f.StdoutPipe.Read(errBuff)
 			if err != nil {
-				log.Fatalf("Error reading stdout: %s", err)
+				log.Fatalf("Error reading stdin: %s", err)
 
 			} else {
-				log.Printf("stdout: %s", errBuff)
+				errBuff = bytes.Trim(errBuff, "\x00")
+				if len(errBuff) > 0 {
+					os.Stdout.Write(errBuff)
+				}
 			}
 		}
 	}()
