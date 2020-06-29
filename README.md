@@ -1,5 +1,9 @@
 # of-watchdog
 
+[![Go Report Card](https://goreportcard.com/badge/github.com/openfaas-incubator/of-watchdog)](https://goreportcard.com/report/github.com/openfaas-incubator/of-watchdog) [![Build Status](https://travis-ci.org/openfaas-incubator/of-watchdog.svg?branch=master)](https://travis-ci.org/openfaas-incubator/of-watchdog)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![OpenFaaS](https://img.shields.io/badge/openfaas-serverless-blue.svg)](https://www.openfaas.com)
+
 The `of-watchdog` is a new version of the OpenFaaS watchdog which provides the original STDIO mode from the Classic Watchdog along with a new HTTP `mode`.
 
 See also: [Classic Watchdog](https://github.com/openfaas/faas/tree/master/watchdog)
@@ -15,7 +19,7 @@ See also: [Classic Watchdog](https://github.com/openfaas/faas/tree/master/watchd
 
 History/context: the original watchdog supported mode the Serializing fork mode only and Afterburn was available for testing via a pull request.
 
-When the of-watchdog is complete this version will support four modes as listed below. We may consolidate or remove some of these modes before going to 1.0 so please consider modes 2-4 experimental.
+When the of-watchdog is complete this version will support five modes as listed below. We may consolidate or remove some of these modes before going to 1.0 so please consider modes 2-4 experimental.
 
 ### 1. HTTP (mode=http)
 
@@ -45,7 +49,13 @@ A process is forked when the watchdog starts, we then forward any request incomi
 
 Pros:
 
-* Fastest option - high concurrency and throughput
+* Fastest option for high concurrency and throughput
+
+* More efficient concurrency and RAM usage vs. forking model
+
+* Database connections can be persisted for the lifetime of the container
+
+* Files or models can be fetched and stored in `/tmp/` as a one-off initialization task and used for all requests after that
 
 * Does not require new/custom client libraries like afterburn but makes use of a long-running daemon such as Express.js for Node or Flask for Python
 
@@ -65,12 +75,11 @@ $ go build ; mode=http port=8081 fprocess="node expressjs-hello-world.js" upstre
 
 Cons:
 
-* Questionable as to whether this is actually "serverless"
-
-* Daemons such as express/flask/sinatra could be hard to configure or potentially unpredictable when used in this way
-
 * One more HTTP hop in the chain between the client and the function
 
+* Daemons such as express/flask/sinatra can be unpredictable when used in this way so many need additional configuration
+
+* Additional memory may be occupied between invocations vs. forking model
 
 ### 2. Serializing fork (mode=serializing)
 
@@ -134,24 +143,31 @@ Vastly accelerated processing speed but requires a client library for each langu
 
 * Exec timeout: not supported.
 
+### 5. Static (mode=static)
+
+This mode starts an HTTP file server for serving static content found at the directory specified by `static_path`.
+
 ## Configuration
 
 Environmental variables:
 
 > Note: timeouts should be specified as Golang durations i.e. `1m` or `20s`. 
 
-| Option                 | Implemented | Usage             |
-|------------------------|--------------|-------------------------------|
-| `function_process`     | Yes          | Process to execute a server in `http` mode or to be executed for each request in the other modes. For non `http` mode the process must accept input via STDIN and print output via STDOUT. Alias: `fprocess` |
-| `read_timeout`         | Yes          | HTTP timeout for reading the payload from the client caller (in seconds) |
-| `write_timeout`        | Yes          | HTTP timeout for writing a response body from your function (in seconds)  |
-| `exec_timeout`         | Yes          | Exec timeout for process exec'd for each incoming request (in seconds). Disabled if set to 0. |
-| `port`                 | Yes          | Specify an alternative TCP port for testing. Default: `8080` |
-| `write_debug`          | No           | Write all output, error messages, and additional information to the logs. Default is `false`. |
-| `content_type`         | Yes          | Force a specific Content-Type response for all responses - only in forking/serializing modes. |
-| `suppress_lock`        | Yes           | When set to `false` the watchdog will attempt to write a lockfile to /tmp/ for healthchecks. Default `false` |
-| `upstream_url`         | Yes          | `http` mode only - where to forward requests i.e. `127.0.0.1:5000` |
-| `buffer_http`     | Yes               | `http` mode only - buffers request body to memory before fowarding. Use if your upstream HTTP server does not accept `Transfer-Encoding: chunked` Default: `false` |
-
+| Option                      | Implemented  | Usage                         |
+|-----------------------------|--------------|-------------------------------|
+| `function_process`          | Yes          | Process to execute a server in `http` mode or to be executed for each request in the other modes. For non `http` mode the process must accept input via STDIN and print output via STDOUT. Alias: `fprocess` |
+| `static_path`               | Yes          | Absolute or relative path to the directory that will be served if `mode="static"` |
+| `read_timeout`              | Yes          | HTTP timeout for reading the payload from the client caller (in seconds) |
+| `write_timeout`             | Yes          | HTTP timeout for writing a response body from your function (in seconds)  |
+| `exec_timeout`              | Yes          | Exec timeout for process exec'd for each incoming request (in seconds). Disabled if set to 0. |
+| `port`                      | Yes          | Specify an alternative TCP port for testing. Default: `8080` |
+| `write_debug`               | No           | Write all output, error messages, and additional information to the logs. Default is `false`. |
+| `content_type`              | Yes          | Force a specific Content-Type response for all responses - only in forking/serializing modes. |
+| `suppress_lock`             | Yes          | When set to `false` the watchdog will attempt to write a lockfile to /tmp/ for healthchecks. Default `false` |
+| `http_upstream_url`         | Yes          | `http` mode only - where to forward requests i.e. `127.0.0.1:5000` |
+| `upstream_url`              | Yes          | alias for `http_upstream_url` |
+| `http_buffer_req_body`      | Yes          | `http` mode only - buffers request body in memory before forwarding upstream to your template's `upstream_url`. Use if your upstream HTTP server does not accept `Transfer-Encoding: chunked` Default: `false` |
+| `buffer_http`               | Yes          | deprecated alias for `http_buffer_req_body`, will be removed in future version  |
+| `max_inflight`              | Yes          | Limit the maximum number of requests in flight |
 
 > Note: the .lock file is implemented for health-checking, but cannot be disabled yet. You must create this file in /tmp/.

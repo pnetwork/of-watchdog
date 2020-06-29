@@ -1,11 +1,17 @@
-FROM golang:1.9.4
+FROM golang:1.13
 
-RUN mkdir -p /go/src/github.com/openfaas-incubator/of-watchdog
+ARG CGO_ENABLED=0
+ARG GO111MODULE="off"
+ARG GOPROXY=""
+
 WORKDIR /go/src/github.com/openfaas-incubator/of-watchdog
 
-COPY main.go    .
-COPY config     config
-COPY executor   executor
+COPY vendor              vendor
+COPY config              config
+COPY executor            executor
+COPY metrics             metrics
+COPY metrics             metrics
+COPY main.go             .
 
 # Run a gofmt and exclude all vendored code.
 RUN test -z "$(gofmt -l $(find . -type f -name '*.go' -not -path "./vendor/*"))"
