@@ -73,6 +73,9 @@ func (f *HTTPFunctionRunner) Start() error {
 		if err != nil {
 			log.Fatalf("Forked function has terminated: %s", err.Error())
 		}
+		fmt.Println("Forked function has terminated, say goodbye in 10 second.")
+		<-time.Tick(time.Second * 10)
+		log.Fatal("Goodbye")
 	}()
 
 	return err
