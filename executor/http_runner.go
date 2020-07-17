@@ -196,12 +196,12 @@ func makeProxyClient(dialTimeout time.Duration) *http.Client {
 		Transport: &http.Transport{
 			Proxy: http.ProxyFromEnvironment,
 			DialContext: (&net.Dialer{
-				Timeout:   dialTimeout,
-				KeepAlive: 10 * time.Second,
+				Timeout: dialTimeout,
+				// KeepAlive: 10 * time.Second,  with server closed conn, upstream error due to not handle ECONNECERROR
 			}).DialContext,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
-			DisableKeepAlives:     false,
+			DisableKeepAlives:     true,
 			IdleConnTimeout:       500 * time.Millisecond,
 			ExpectContinueTimeout: 1500 * time.Millisecond,
 		},
