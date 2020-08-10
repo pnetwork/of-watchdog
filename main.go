@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io/ioutil"
 	"log"
@@ -17,6 +18,8 @@ import (
 
 	"github.com/openfaas-incubator/of-watchdog/config"
 	"github.com/openfaas-incubator/of-watchdog/executor"
+	"github.com/openfaas-incubator/of-watchdog/metrics"
+	limiter "github.com/openfaas/faas-middleware/concurrency-limiter"
 )
 
 var (
@@ -24,28 +27,49 @@ var (
 )
 
 func main() {
-	atomic.StoreInt32(&acceptingConnections, 0)
+	var runHealthcheck bool
 
-	watchdogConfig, configErr := config.New(os.Environ())
-	if configErr != nil {
-		fmt.Fprintf(os.Stderr, configErr.Error())
-		os.Exit(-1)
+	flag.BoolVar(&runHealthcheck,
+		"run-healthcheck",
+		false,
+		"Check for the a lock-file, when using an exec healthcheck. Exit 0 for present, non-zero when not found.")
+
+	flag.Parse()
+
+	if runHealthcheck {
+		if lockFilePresent() {
+			os.Exit(0)
+		}
+
+		fmt.Fprintf(os.Stderr, "unable to find lock file.\n")
+		os.Exit(1)
 	}
 
-	if len(watchdogConfig.FunctionProcess) == 0 {
+	atomic.StoreInt32(&acceptingConnections, 0)
+
+	watchdogConfig := config.New(os.Environ())
+
+	if len(watchdogConfig.FunctionProcess) == 0 && watchdogConfig.OperationalMode != config.ModeStatic {
 		fmt.Fprintf(os.Stderr, "Provide a \"function_process\" or \"fprocess\" environmental variable for your function.\n")
-		os.Exit(-1)
+		os.Exit(1)
 	}
 
 	requestHandler := buildRequestHandler(watchdogConfig)
 
 	log.Printf("OperationalMode: %s\n", config.WatchdogMode(watchdogConfig.OperationalMode))
 
-	http.HandleFunc("/", requestHandler)
+	httpMetrics := metrics.NewHttp()
+	http.HandleFunc("/", metrics.InstrumentHandler(requestHandler, httpMetrics))
 	http.HandleFunc("/_/health", makeHealthHandler())
 
-	shutdownTimeout := watchdogConfig.HTTPWriteTimeout
+	metricsServer := metrics.MetricsServer{}
+	metricsServer.Register(watchdogConfig.MetricsPort)
 
+	cancel := make(chan bool)
+
+	go metricsServer.Serve(cancel)
+
+	shutdownTimeout := watchdogConfig.HTTPWriteTimeout
 	s := &http.Server{
 		Addr:           fmt.Sprintf(":%d", watchdogConfig.TCPPort),
 		ReadTimeout:    watchdogConfig.HTTPReadTimeout,
@@ -53,8 +77,13 @@ func main() {
 		MaxHeaderBytes: 1 << 20, // Max header of 1MB
 	}
 
-	listenUntilShutdown(shutdownTimeout, s, watchdogConfig.SuppressLock)
+	log.Printf("Timeouts: read: %s, write: %s hard: %s.\n",
+		watchdogConfig.HTTPReadTimeout,
+		watchdogConfig.HTTPWriteTimeout,
+		watchdogConfig.ExecTimeout)
+	log.Printf("Listening on port: %d\n", watchdogConfig.TCPPort)
 
+	listenUntilShutdown(shutdownTimeout, s, watchdogConfig.SuppressLock)
 }
 
 func markUnhealthy() error {
@@ -120,7 +149,7 @@ func listenUntilShutdown(shutdownTimeout time.Duration, s *http.Server, suppress
 	<-idleConnsClosed
 }
 
-func buildRequestHandler(watchdogConfig config.WatchdogConfig) http.HandlerFunc {
+func buildRequestHandler(watchdogConfig config.WatchdogConfig) http.Handler {
 	var requestHandler http.HandlerFunc
 
 	switch watchdogConfig.OperationalMode {
@@ -136,9 +165,15 @@ func buildRequestHandler(watchdogConfig config.WatchdogConfig) http.HandlerFunc 
 	case config.ModeHTTP:
 		requestHandler = makeHTTPRequestHandler(watchdogConfig)
 		break
+	case config.ModeStatic:
+		requestHandler = makeStaticRequestHandler(watchdogConfig)
 	default:
 		log.Panicf("unknown watchdog mode: %d", watchdogConfig.OperationalMode)
 		break
+	}
+
+	if watchdogConfig.MaxInflight > 0 {
+		return limiter.NewConcurrencyLimiter(requestHandler, watchdogConfig.MaxInflight)
 	}
 
 	return requestHandler
@@ -149,11 +184,19 @@ func buildRequestHandler(watchdogConfig config.WatchdogConfig) http.HandlerFunc 
 func createLockFile() (string, error) {
 	path := filepath.Join(os.TempDir(), ".lock")
 	log.Printf("Writing lock-file to: %s\n", path)
+
+	mkdirErr := os.MkdirAll(os.TempDir(), os.ModePerm)
+	if mkdirErr != nil {
+		return path, mkdirErr
+	}
+
 	writeErr := ioutil.WriteFile(path, []byte{}, 0660)
+	if writeErr != nil {
+		return path, writeErr
+	}
 
 	atomic.StoreInt32(&acceptingConnections, 1)
-
-	return path, writeErr
+	return path, nil
 }
 
 func makeAfterBurnRequestHandler(watchdogConfig config.WatchdogConfig) func(http.ResponseWriter, *http.Request) {
@@ -272,6 +315,10 @@ func getEnvironment(r *http.Request) []string {
 		envs = append(envs, fmt.Sprintf("Http_Path=%s", r.URL.Path))
 	}
 
+	if len(r.TransferEncoding) > 0 {
+		envs = append(envs, fmt.Sprintf("Http_Transfer_Encoding=%s", r.TransferEncoding[0]))
+	}
+
 	return envs
 }
 
@@ -285,7 +332,7 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig) func(http.Resp
 	}
 
 	if len(watchdogConfig.UpstreamURL) == 0 {
-		log.Fatal(`For mode=http you must specify a valid URL for "upstream_url"`)
+		log.Fatal(`For "mode=http" you must specify a valid URL for "http_upstream_url"`)
 	}
 
 	urlValue, upstreamURLErr := url.Parse(watchdogConfig.UpstreamURL)
@@ -320,8 +367,18 @@ func makeHTTPRequestHandler(watchdogConfig config.WatchdogConfig) func(http.Resp
 	}
 }
 
+func makeStaticRequestHandler(watchdogConfig config.WatchdogConfig) http.HandlerFunc {
+	if watchdogConfig.StaticPath == "" {
+		log.Fatal(`For mode=static you must specify the "static_path" to serve`)
+	}
+
+	log.Printf("Serving files at %s", watchdogConfig.StaticPath)
+	return http.FileServer(http.Dir(watchdogConfig.StaticPath)).ServeHTTP
+}
+
 func lockFilePresent() bool {
 	path := filepath.Join(os.TempDir(), ".lock")
+
 	if _, err := os.Stat(path); os.IsNotExist(err) {
 		return false
 	}

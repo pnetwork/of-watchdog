@@ -1,51 +1,67 @@
 package config
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
 
 func TestNew(t *testing.T) {
-	defaults, err := New([]string{})
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	defaults := New([]string{})
 	if defaults.TCPPort != 8080 {
 		t.Errorf("Want TCPPort: 8080, got: %d", defaults.TCPPort)
 	}
 }
 
 func Test_OperationalMode_Default(t *testing.T) {
-	defaults, err := New([]string{})
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	defaults := New([]string{})
 	if defaults.OperationalMode != ModeStreaming {
 		t.Errorf("Want %s. got: %s", WatchdogMode(ModeStreaming), WatchdogMode(defaults.OperationalMode))
 	}
 }
+
 func Test_BufferHttpModeDefaultsToFalse(t *testing.T) {
 	env := []string{}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	actual := New(env)
 	want := false
 	if actual.BufferHTTPBody != want {
 		t.Errorf("Want %v. got: %v", want, actual.BufferHTTPBody)
 	}
 }
 
-func Test_BufferHttpMode_CanBeSetToTrue(t *testing.T) {
+func Test_UpstreamURL(t *testing.T) {
+	urlVal := "http://127.0.0.1:8082"
 	env := []string{
-		"buffer_http=true",
+		fmt.Sprintf("upstream_url=%s", urlVal),
 	}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
+	actual := New(env)
+	want := urlVal
+	if actual.UpstreamURL != want {
+		t.Errorf("Want %v. got: %v", want, actual.UpstreamURL)
 	}
+}
+
+func Test_UpstreamURLVerbose(t *testing.T) {
+	urlVal := "http://127.0.0.1:8082"
+	env := []string{
+		fmt.Sprintf("http_upstream_url=%s", urlVal),
+	}
+
+	actual := New(env)
+	want := urlVal
+	if actual.UpstreamURL != want {
+		t.Errorf("Want %v. got: %v", want, actual.UpstreamURL)
+	}
+}
+
+func Test_BufferHttpMode_CanBeSetToTrue(t *testing.T) {
+	env := []string{
+		"http_buffer_req_body=true",
+	}
+
+	actual := New(env)
 	want := true
 	if actual.BufferHTTPBody != want {
 		t.Errorf("Want %v. got: %v", want, actual.BufferHTTPBody)
@@ -57,23 +73,29 @@ func Test_OperationalMode_AfterBurn(t *testing.T) {
 		"mode=afterburn",
 	}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	actual := New(env)
 
 	if actual.OperationalMode != ModeAfterBurn {
 		t.Errorf("Want %s. got: %s", WatchdogMode(ModeAfterBurn), WatchdogMode(actual.OperationalMode))
 	}
 }
 
+func Test_OperationalMode_Static(t *testing.T) {
+	env := []string{
+		"mode=static",
+	}
+
+	actual := New(env)
+
+	if actual.OperationalMode != ModeStatic {
+		t.Errorf("Want %s. got: %s", WatchdogMode(ModeStatic), WatchdogMode(actual.OperationalMode))
+	}
+}
+
 func Test_ContentType_Default(t *testing.T) {
 	env := []string{}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	actual := New(env)
 
 	if actual.ContentType != "application/octet-stream" {
 		t.Errorf("Default (ContentType) Want %s. got: %s", actual.ContentType, "octet-stream")
@@ -85,10 +107,7 @@ func Test_ContentType_Override(t *testing.T) {
 		"content_type=application/json",
 	}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	actual := New(env)
 
 	if actual.ContentType != "application/json" {
 		t.Errorf("(ContentType) Want %s. got: %s", actual.ContentType, "application/json")
@@ -100,10 +119,7 @@ func Test_FunctionProcessLegacyName(t *testing.T) {
 		"fprocess=env",
 	}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	actual := New(env)
 
 	if actual.FunctionProcess != "env" {
 		t.Errorf("Want %s. got: %s", "env", actual.FunctionProcess)
@@ -115,10 +131,7 @@ func Test_FunctionProcessAlternativeName(t *testing.T) {
 		"function_process=env",
 	}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	actual := New(env)
 
 	if actual.FunctionProcess != "env" {
 		t.Errorf("Want %s. got: %s", "env", actual.FunctionProcess)
@@ -161,10 +174,7 @@ func Test_FunctionProcess_Arguments(t *testing.T) {
 
 	for _, testCase := range cases {
 		t.Run(testCase.scenario, func(t *testing.T) {
-			actual, err := New([]string{testCase.env})
-			if err != nil {
-				t.Errorf("Expected no errors")
-			}
+			actual := New([]string{testCase.env})
 
 			process, args := actual.Process()
 			if process != testCase.wantProcess {
@@ -192,10 +202,7 @@ func Test_PortOverride(t *testing.T) {
 		"port=8081",
 	}
 
-	actual, err := New(env)
-	if err != nil {
-		t.Errorf("Expected no errors")
-	}
+	actual := New(env)
 
 	if actual.TCPPort != 8081 {
 		t.Errorf("Want %d. got: %d", 8081, actual.TCPPort)
@@ -241,10 +248,7 @@ func Test_Timeouts(t *testing.T) {
 	}
 
 	for _, testCase := range cases {
-		actual, err := New(testCase.env)
-		if err != nil {
-			t.Errorf("(%s) Expected no errors", testCase.name)
-		}
+		actual := New(testCase.env)
 		if testCase.readTimeout != actual.HTTPReadTimeout {
 			t.Errorf("(%s) HTTPReadTimeout want: %s, got: %s", testCase.name, actual.HTTPReadTimeout, testCase.readTimeout)
 		}
@@ -257,4 +261,89 @@ func Test_Timeouts(t *testing.T) {
 
 	}
 
+}
+
+func Test_TestNonDurationValue_getDuration(t *testing.T) {
+	want := 10 * time.Second
+	env := map[string]string{"time": "10"}
+	got := getDuration(env, "time", 5*time.Second)
+
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+}
+
+func Test_TestDurationValue_getDuration(t *testing.T) {
+	want := 10 * time.Second
+	env := map[string]string{"time": "10s"}
+	got := getDuration(env, "time", 5*time.Second)
+
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+}
+func Test_TestNonParsableValue_getDuration(t *testing.T) {
+	want := 5 * time.Second
+	env := map[string]string{"time": "this is bad"}
+	got := getDuration(env, "time", 5*time.Second)
+
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+}
+
+func Test_TestMissingMapValue_getDuration(t *testing.T) {
+	want := 5 * time.Second
+	env := map[string]string{"time_is_missing": "10"}
+	got := getDuration(env, "time", 5*time.Second)
+
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+}
+
+func Test_IntAsString_parseIntOrDurationValue(t *testing.T) {
+	want := 10 * time.Second
+
+	got := parseIntOrDurationValue("10", 5*time.Second)
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+}
+
+func Test_Duration_parseIntOrDurationValue(t *testing.T) {
+	want := 10 * time.Second
+
+	got := parseIntOrDurationValue("10s", 5*time.Second)
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+
+}
+
+func Test_EmptyString_parseIntOrDurationValue(t *testing.T) {
+	want := 5 * time.Second
+
+	got := parseIntOrDurationValue("", 5*time.Second)
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+}
+
+func Test_ZeroAsString_parseIntOrDurationValue(t *testing.T) {
+	want := 0 * time.Second
+
+	got := parseIntOrDurationValue("0", 5*time.Second)
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
+}
+
+func Test_NonParsableString_parseIntOrDurationValue(t *testing.T) {
+	want := 5 * time.Second
+
+	got := parseIntOrDurationValue("this is not good", 5*time.Second)
+	if want != got {
+		t.Error(fmt.Sprintf("want: %q got: %q", want, got))
+	}
 }

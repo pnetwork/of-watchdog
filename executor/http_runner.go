@@ -19,15 +19,14 @@ import (
 
 // HTTPFunctionRunner creates and maintains one process responsible for handling all calls
 type HTTPFunctionRunner struct {
-	ExecTimeout    time.Duration // ExecTimeout the maxmium duration or an upstream function call
-	ReadTimeout    time.Duration
-	WriteTimeout   time.Duration
-	Process        string
-	ProcessArgs    []string
+	ExecTimeout    time.Duration // ExecTimeout the maximum duration or an upstream function call
+	ReadTimeout    time.Duration // ReadTimeout for HTTP server
+	WriteTimeout   time.Duration // WriteTimeout for HTTP Server
+	Process        string        // Process to run as fprocess
+	ProcessArgs    []string      // ProcessArgs to pass to command
 	Command        *exec.Cmd
 	StdinPipe      io.WriteCloser
 	StdoutPipe     io.ReadCloser
-	Stderr         io.Writer
 	Client         *http.Client
 	UpstreamURL    *url.URL
 	BufferHTTPBody bool
@@ -53,37 +52,9 @@ func (f *HTTPFunctionRunner) Start() error {
 
 	errPipe, _ := cmd.StderrPipe()
 
-	// Prints stderr to console and is picked up by container logging driver.
-	go func() {
-		log.Println("Started logging stderr from function.")
-		for {
-			errBuff := make([]byte, 256)
-
-			_, err := errPipe.Read(errBuff)
-			if err != nil {
-				log.Fatalf("Error reading stderr: %s", err)
-
-			} else {
-				log.Printf("stderr: %s", errBuff)
-			}
-		}
-	}()
-
-	go func() {
-		for {
-			errBuff := make([]byte, 4096)
-			_, err := f.StdoutPipe.Read(errBuff)
-			if err != nil {
-				log.Fatalf("Error reading stdin: %s", err)
-
-			} else {
-				errBuff = bytes.Trim(errBuff, "\x00")
-				if len(errBuff) > 0 {
-					os.Stdout.Write(errBuff)
-				}
-			}
-		}
-	}()
+	// Logs lines from stderr and stdout to the stderr and stdout of this process
+	bindLoggingPipe("stderr", errPipe, os.Stderr)
+	bindLoggingPipe("stdout", f.StdoutPipe, os.Stdout)
 
 	f.Client = makeProxyClient(f.ExecTimeout)
 
@@ -96,7 +67,18 @@ func (f *HTTPFunctionRunner) Start() error {
 
 	}()
 
-	return cmd.Start()
+	err := cmd.Start()
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			log.Fatalf("Forked function has terminated: %s", err.Error())
+		}
+		fmt.Println("Forked function has terminated, say goodbye in 10 second.")
+		<-time.Tick(time.Second * 10)
+		log.Fatal("Goodbye")
+	}()
+
+	return err
 }
 
 // Run a function with a long-running process with a HTTP protocol for communication
@@ -125,17 +107,27 @@ func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *ht
 	request.Host = r.Host
 	copyHeaders(request.Header, &r.Header)
 
-	ctx, cancel := context.WithTimeout(context.Background(), f.ExecTimeout)
+	var reqCtx context.Context
+	var cancel context.CancelFunc
+
+	if f.ExecTimeout.Nanoseconds() > 0 {
+		reqCtx, cancel = context.WithTimeout(r.Context(), f.ExecTimeout)
+	} else {
+		reqCtx = r.Context()
+		cancel = func() {
+
+		}
+	}
 
 	defer cancel()
 
-	res, err := f.Client.Do(request.WithContext(ctx))
+	res, err := f.Client.Do(request.WithContext(reqCtx))
 
 	if err != nil {
 		log.Printf("Upstream HTTP request error: %s\n", err.Error())
 
 		// Error unrelated to context / deadline
-		if ctx.Err() == nil {
+		if reqCtx.Err() == nil {
 			w.Header().Set("X-Duration-Seconds", fmt.Sprintf("%f", time.Since(startedTime).Seconds()))
 
 			w.WriteHeader(http.StatusInternalServerError)
@@ -144,9 +136,9 @@ func (f *HTTPFunctionRunner) Run(req FunctionRequest, contentLength int64, r *ht
 		}
 
 		select {
-		case <-ctx.Done():
+		case <-reqCtx.Done():
 			{
-				if ctx.Err() != nil {
+				if reqCtx.Err() != nil {
 					// Error due to timeout / deadline
 					log.Printf("Upstream HTTP killed due to exec_timeout: %s\n", f.ExecTimeout)
 					w.Header().Set("X-Duration-Seconds", fmt.Sprintf("%f", time.Since(startedTime).Seconds()))
